@@ -1,0 +1,23 @@
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Display:wght@400;500;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --blue:    #1a73e8;
+  --blue-lt: #e8f0fe;
+  --green:   #188038;
+  --green-lt:#e6f4ea;
+  --orange:  #e37400;
+  --red:     #d93025;
+  --g1: #202124;
+  --g2: #3c4043;
+  --g3: #5f6368;
+  --g4: #80868b;
+  --g5: #dadce0;
+  --g6: #f1f3f4;
+  --g7: #f8f9fa;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { font-family: 'Google Sans', sans-serif; background: #e8e0d8; overflow: hidden; height: 100%; }

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/jakob/city_exploring_proto remote set-url origin https://github.com/jakobkohr/city_exploring_proto.git)",
+      "Bash(git -C /Users/jakob/city_exploring_proto push origin main --force)",
+      "Bash(git -C /Users/jakob/city_exploring_proto log --oneline -5)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}
