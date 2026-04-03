@@ -1,9 +1,9 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { motion, AnimatePresence, useDragControls } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { MOCK_USERS } from "../lib/users";
 import { synthesizeProfile, scoreRestaurants, DEFAULT_WEIGHTS } from "../lib/engine";
-import { GoogleMap, useJsApiLoader, Marker, Circle } from "@react-google-maps/api";
+import { GoogleMap, useJsApiLoader, Marker, Circle, OverlayView } from "@react-google-maps/api";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const MODES = [
@@ -23,9 +23,6 @@ const PLACE_CATEGORIES = [
 
 // Weights for non-food categories: skip cuisine + price, focus on rating + distance
 const NON_FOOD_WEIGHTS = { cuisine: 0, rating: 0.55, price: 0, distance: 0.45 };
-const SNAP_PEEK = 108;
-const SNAP_HALF = 0.52;
-const SNAP_FULL = 0.80;
 
 // Maps cuisine_override types → Google Places keyword for nearbysearch
 const CUISINE_KEYWORD = {
@@ -43,6 +40,14 @@ const CUISINE_KEYWORD = {
   steak_house:              "steak grill carn",
   mediterranean_restaurant: "mediterranean",
   french_restaurant:        "french",
+};
+
+// Mock social graph — friend connections per user persona
+const SOCIAL_PROFILES = {
+  "david@gmail.com":  { friends: [{ name:"Sofia", initials:"S", color:"#e8710a" }, { name:"Marc", initials:"M", color:"#188038" }] },
+  "sofia@gmail.com":  { friends: [{ name:"David", initials:"D", color:"#1a73e8" }, { name:"Alex", initials:"A", color:"#34a853" }] },
+  "marc@gmail.com":   { friends: [{ name:"David", initials:"D", color:"#1a73e8" }] },
+  "alex@gmail.com":   { friends: [{ name:"Sofia", initials:"S", color:"#e8710a" }] },
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -119,11 +124,13 @@ function LoginScreen({ onLogin }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// RESTAURANT CARD
+// PLACE CARD
 // ══════════════════════════════════════════════════════════════════════════════
-function RestaurantCard({ r, onFeedback, isSelected, placeCategory }) {
+function PlaceCard({ r, onFeedback, isSelected, placeCategory, onMouseEnter, onMouseLeave, socialData }) {
   const [expanded, setExpanded] = useState(false);
   const [feedbackGiven, setFeedbackGiven] = useState(null);
+  const [socialHovered, setSocialHovered] = useState(false);
+
   const price = r.price_level != null ? "€".repeat(r.price_level) : null;
   const rawType = (r.types?.[0] || "place").replace(/_restaurant$/,"").replace(/_/g," ");
   const typeLabel = rawType.charAt(0).toUpperCase() + rawType.slice(1);
@@ -140,44 +147,52 @@ function RestaurantCard({ r, onFeedback, isSelected, placeCategory }) {
   return (
     <motion.div layout initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }}
       transition={{ ease:[0.22,1,0.36,1] }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       style={{ background:"white", borderRadius:18, marginBottom:12, overflow:"hidden",
         boxShadow: isSelected
           ? "0 0 0 2.5px #1a73e8, 0 4px 20px rgba(26,115,232,0.22)"
           : "0 2px 10px rgba(0,0,0,0.09)",
-        transition:"box-shadow 0.2s" }}>
+        transition:"box-shadow 0.2s", cursor:"pointer" }}>
 
-      {/* Photo */}
-      {r.photo_url && (
-        <div style={{ height:148, background:"#f1f3f4", overflow:"hidden" }}>
-          <img src={r.photo_url} alt={r.name}
-            style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
-        </div>
-      )}
-      {!r.photo_url && (
-        <div style={{ height:80, background:`linear-gradient(135deg, ${matchColor}22, ${matchColor}44)`,
-          display:"flex", alignItems:"center", justifyContent:"center", fontSize:36 }}>
-          {catEmoji}
-        </div>
-      )}
+      {/* Photo with overlay badges */}
+      <div style={{ position:"relative", height:140, background:"#f1f3f4", overflow:"hidden" }}>
+        {r.photo_url
+          ? <img src={r.photo_url} alt={r.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+          : <div style={{ height:"100%", background:`linear-gradient(135deg, ${matchColor}22, ${matchColor}44)`,
+              display:"flex", alignItems:"center", justifyContent:"center", fontSize:36 }}>
+              {catEmoji}
+            </div>
+        }
+        {/* Match % badge — top-right */}
+        <motion.div initial={{ scale:0.7 }} animate={{ scale:1 }}
+          transition={{ type:"spring", stiffness:400, damping:20 }}
+          style={{ position:"absolute", top:8, right:8, background:matchColor, color:"white",
+            borderRadius:20, padding:"3px 11px", fontSize:13, fontWeight:700,
+            boxShadow:"0 1px 6px rgba(0,0,0,0.30)" }}>
+          {r.matchPct}%
+        </motion.div>
+        {/* Social badge — top-left */}
+        {socialData && (
+          <div style={{ position:"absolute", top:8, left:8 }}
+            onMouseEnter={() => setSocialHovered(true)}
+            onMouseLeave={() => setSocialHovered(false)}>
+            <SocialBubble social={socialData} isHovered={socialHovered}
+              onHover={() => setSocialHovered(true)} onLeave={() => setSocialHovered(false)}/>
+          </div>
+        )}
+      </div>
 
       <div style={{ padding:"14px 14px 12px" }}>
-        {/* Name + match */}
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:5 }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:16, fontWeight:700, color:"#202124",
-              whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-              {r.name}
-            </div>
-            <div style={{ fontSize:12, color:"#5f6368", marginTop:1 }}>
-              {typeLabel}{price ? ` · ${price}` : ""} · {r.neighborhood}
-            </div>
+        {/* Name + type */}
+        <div style={{ marginBottom:5 }}>
+          <div style={{ fontSize:16, fontWeight:700, color:"#202124",
+            whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+            {r.name}
           </div>
-          <motion.div initial={{ scale:0.7 }} animate={{ scale:1 }}
-            transition={{ type:"spring", stiffness:400, damping:20 }}
-            style={{ background:matchColor, color:"white", borderRadius:20,
-              padding:"3px 11px", fontSize:13, fontWeight:700, marginLeft:10, flexShrink:0 }}>
-            {r.matchPct}%
-          </motion.div>
+          <div style={{ fontSize:12, color:"#5f6368", marginTop:1 }}>
+            {typeLabel}{price ? ` · ${price}` : ""} · {r.neighborhood}
+          </div>
         </div>
 
         {/* Meta */}
@@ -550,7 +565,7 @@ function Toast({ msg }) {
       {msg && (
         <motion.div initial={{ opacity:0, y:16 }} animate={{ opacity:1, y:0 }}
           exit={{ opacity:0, y:16 }}
-          style={{ position:"fixed", bottom:130, left:"50%", transform:"translateX(-50%)",
+          style={{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)",
             background:"#202124", color:"white", borderRadius:20,
             padding:"9px 20px", fontSize:13, fontWeight:500, zIndex:100,
             whiteSpace:"nowrap", boxShadow:"0 4px 16px rgba(0,0,0,0.22)" }}>
@@ -558,6 +573,68 @@ function Toast({ msg }) {
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SOCIAL BUBBLE — shown on map pins and card photos
+// ══════════════════════════════════════════════════════════════════════════════
+function SocialBubble({ social, onHover, onLeave, isHovered }) {
+  if (!social) return null;
+  const isFriend = social.type === "friend";
+  return (
+    <div
+      onMouseEnter={onHover}
+      onMouseLeave={onLeave}
+      style={{ position:"relative", display:"inline-flex", alignItems:"center", cursor:"pointer" }}
+    >
+      <motion.div
+        whileHover={{ scale:1.12 }}
+        style={{
+          width:28, height:28, borderRadius:"50%",
+          background: isFriend ? social.color : "#5f6368",
+          border:"2px solid white",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          color:"white", fontSize:10, fontWeight:700,
+          boxShadow:"0 2px 6px rgba(0,0,0,0.25)",
+        }}
+      >
+        {isFriend ? social.initials : "👥"}
+      </motion.div>
+
+      <AnimatePresence>
+        {isHovered && (
+          <motion.div
+            initial={{ opacity:0, y:4, scale:0.9 }}
+            animate={{ opacity:1, y:0, scale:1 }}
+            exit={{ opacity:0, y:4, scale:0.9 }}
+            transition={{ duration:0.15 }}
+            style={{
+              position:"absolute", bottom:"calc(100% + 8px)", left:"50%",
+              transform:"translateX(-50%)",
+              background:"#202124", color:"white",
+              borderRadius:10, padding:"6px 10px",
+              fontSize:11, fontWeight:500, whiteSpace:"nowrap",
+              zIndex:200, boxShadow:"0 4px 12px rgba(0,0,0,0.3)",
+              pointerEvents:"none",
+            }}
+          >
+            {isFriend
+              ? `${social.name} visited · "Loved it"`
+              : "Friends of friends liked this"
+            }
+            <div style={{
+              position:"absolute", top:"100%", left:"50%",
+              transform:"translateX(-50%)",
+              width:0, height:0,
+              borderLeft:"5px solid transparent",
+              borderRight:"5px solid transparent",
+              borderTop:"5px solid #202124",
+            }}/>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -593,19 +670,17 @@ export default function App() {
   const [vibeFilterMismatch,  setVibeFilterMismatch]  = useState(false);
 
   // ── UI state ───────────────────────────────────────────────────────────────
-  const [activeTab,   setActiveTab]   = useState("explore");
-  const [selectedRec, setSelectedRec] = useState(null);
-  const [hoveredRec,  setHoveredRec]  = useState(null);
-  const [toastMsg,    setToastMsg]    = useState(null);
-  const sheetContentRef = useRef(null);
+  const [activeTab,        setActiveTab]        = useState("explore");
+  const [selectedRec,      setSelectedRec]      = useState(null);
+  const [hoveredRec,       setHoveredRec]       = useState(null);
+  const [hoveredSocialPin, setHoveredSocialPin] = useState(null);
+  const [toastMsg,         setToastMsg]         = useState(null);
+  const panelContentRef = useRef(null);
   const cardRefs        = useRef({});
-  const [vh,        setVh]        = useState(812);   // SSR-safe viewport height
-  const [sheetSnap, setSheetSnap] = useState("half");
-  const dragControls  = useDragControls();
-  const agentModeRef  = useRef(false); // when true, agent owns recs — skip engine re-score
-  const agentPicksRef    = useRef([]);   // full agent picks, used to restore after open_now filter
-  const agentModeCtxRef  = useRef(null); // "trending" | "hidden" | null — set when mode chip triggers agent
-  const prefTextRef      = useRef("");   // last submitted preference text — used for radius re-trigger & refresh
+  const agentModeRef     = useRef(false);
+  const agentPicksRef    = useRef([]);
+  const agentModeCtxRef  = useRef(null);
+  const prefTextRef      = useRef("");
 
   // ── Map state ──────────────────────────────────────────────────────────────
   const [userLatLng, setUserLatLng] = useState(null);
@@ -616,51 +691,28 @@ export default function App() {
     googleMapsApiKey: process.env.NEXT_PUBLIC_GMAPS_KEY || "",
   });
 
-  // Use persona's neighbourhood coords — no real geolocation needed in prototype
   const PERSONA_COORDS = {
-    "david@gmail.com": { lat: 41.3910, lng: 2.1655 },  // Eixample (central)
-    "sofia@gmail.com": { lat: 41.4035, lng: 2.1536 },  // Gràcia
-    "marc@gmail.com":  { lat: 41.3762, lng: 2.1921 },  // Barceloneta (central)
-    "alex@gmail.com":  { lat: 41.4016, lng: 2.2006 },  // Poblenou
+    "david@gmail.com": { lat: 41.3910, lng: 2.1655 },
+    "sofia@gmail.com": { lat: 41.4035, lng: 2.1536 },
+    "marc@gmail.com":  { lat: 41.3762, lng: 2.1921 },
+    "alex@gmail.com":  { lat: 41.4016, lng: 2.2006 },
   };
-  // Pan map to user's location whenever it changes (profile switch or login)
+
   useEffect(() => {
     if (userLatLng && mapRef.current) mapRef.current.panTo(userLatLng);
   }, [userLatLng]);
 
-  // Fit map so user dot + all 3 pick markers are visible above the half-state panel
   useEffect(() => {
     if (!mapRef.current || !userLatLng || !recs.length || !window.google) return;
     const bounds = new window.google.maps.LatLngBounds();
     bounds.extend(userLatLng);
     recs.forEach(r => { if (r.lat && r.lng) bounds.extend({ lat: r.lat, lng: r.lng }); });
-    // Bottom padding = panel height at half state so markers land above the sheet
-    mapRef.current.fitBounds(bounds, {
-      top: 80,   // clears search bar + mode chips
-      right: 50,
-      bottom: Math.round(vh * SNAP_HALF) + 30,
-      left: 50,
-    });
-    // Cap zoom so nearby clusters don't over-zoom
+    mapRef.current.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
     const idle = mapRef.current.addListener("idle", () => {
       if (mapRef.current.getZoom() > 16) mapRef.current.setZoom(16);
       window.google.maps.event.removeListener(idle);
     });
-  }, [recs, userLatLng, vh]);
-
-  // Measure real viewport height client-side only
-  useEffect(() => {
-    const update = () => setVh(window.innerHeight);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-
-  const snapPx = useCallback((snap) => {
-    if (snap === "peek") return SNAP_PEEK;
-    if (snap === "half") return vh * SNAP_HALF;
-    return vh * SNAP_FULL;
-  }, [vh]);
+  }, [recs, userLatLng]);
 
   const user = userEmail ? MOCK_USERS[userEmail] : null;
 
@@ -678,7 +730,6 @@ export default function App() {
     setPlaceCategory("food");
     setMode("all");
     setActiveTab("explore");
-    setSheetSnap("half");
     setRadius(750);
     setRecs([]); setRestaurants([]); setHistory([]);
     setExcluded(new Set()); setCustomWeights(null); setPrefLabel(null); setAdvanced({});
@@ -689,14 +740,14 @@ export default function App() {
   useEffect(() => {
     if (!selectedRec) return;
     setActiveTab("explore");
-    setSheetSnap("full");
     setTimeout(() => {
       const el = cardRefs.current[selectedRec];
-      if (el && sheetContentRef.current)
-        sheetContentRef.current.scrollTo({ top: el.offsetTop - 8, behavior:"smooth" });
+      if (el && panelContentRef.current)
+        panelContentRef.current.scrollTo({ top: el.offsetTop - 8, behavior:"smooth" });
     }, 220);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRec]);
+
   const handleLogout = () => {
     setLoggedIn(false); setUserEmail(null); setProfile(null);
   };
@@ -708,7 +759,6 @@ export default function App() {
     setLoadingRecs(true);
     setRestaurants([]);
 
-    // Derive keyword from cuisine_override so Google filters by cuisine
     const override = advanced.cuisine_override;
     const keyword = override?.length
       ? [...new Set(override.map(t => CUISINE_KEYWORD[t]).filter(Boolean))].join(" ")
@@ -726,7 +776,7 @@ export default function App() {
         } else if (agentModeRef.current && prefTextRef.current) {
           runPrefAgent(prefTextRef.current, results);
         } else {
-          triggerForYouAgent(results); // always use agent for For You
+          triggerForYouAgent(results);
         }
       })
       .catch(err => { if (err.name !== "AbortError") console.error(err); })
@@ -740,7 +790,6 @@ export default function App() {
     if (!agentModeRef.current || !agentPicksRef.current.length) return;
     let out = agentPicksRef.current;
 
-    // Price filter — detect mismatch instead of silently ignoring
     if (advanced.price_max) {
       const f = out.filter(r => (r.price_level || 2) <= advanced.price_max);
       if (f.length) {
@@ -748,7 +797,7 @@ export default function App() {
         setPriceFilterMismatch(false);
       } else {
         setPriceFilterMismatch(true);
-        return; // keep current recs, show mismatch message instead
+        return;
       }
     } else {
       setPriceFilterMismatch(false);
@@ -779,13 +828,12 @@ export default function App() {
 
   // ── Re-score whenever inputs change ───────────────────────────────────────
   useEffect(() => {
-    if (agentModeRef.current) return; // agent owns recs — don't overwrite
+    if (agentModeRef.current) return;
     if (!profile || !restaurants.length) return;
     const weights = placeCategory !== "food" ? NON_FOOD_WEIGHTS : customWeights;
     const scored  = scoreRestaurants(restaurants, profile, { mode, advanced, weights });
     const visible = scored.filter(r => !excluded.has(r.name)).slice(0, 3);
 
-    // Detect cuisine_override with no matching results in this radius
     if (advanced.cuisine_override?.length) {
       const overrideSet = new Set(advanced.cuisine_override);
       const anyMatch = visible.some(r => (r.types || []).some(t => overrideSet.has(t)));
@@ -794,7 +842,6 @@ export default function App() {
       setNoMatch(false);
     }
 
-    // Set placeholder immediately, then stream in explanations
     setRecs(visible.map(r => ({ ...r, explanation: null })));
     visible.forEach(r => {
       fetch("/api/explain", {
@@ -828,7 +875,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recs]);
 
-  // ── Apply advanced filters to agent picks (mirrors engine hard filters) ───
+  // ── Apply advanced filters to agent picks ─────────────────────────────────
   const applyAgentFilters = (picks) => {
     let out = picks;
     if (advanced.price_max) {
@@ -849,7 +896,7 @@ export default function App() {
     return out;
   };
 
-  // ── Enrich agent picks with engine sub-scores for score breakdown display ──
+  // ── Enrich agent picks with engine sub-scores ─────────────────────────────
   const enrichWithScores = (picks) => {
     if (!profile) return picks;
     const weights = placeCategory !== "food" ? NON_FOOD_WEIGHTS : customWeights;
@@ -862,10 +909,10 @@ export default function App() {
     });
   };
 
-  // ── For You agent — profile-driven, replaces engine for initial picks ──────
+  // ── For You agent ──────────────────────────────────────────────────────────
   const triggerForYouAgent = async (existingOverride) => {
     if (!userLatLng || !profile) return;
-    agentModeCtxRef.current = "foryou"; // prevents .finally() from killing loading early
+    agentModeCtxRef.current = "foryou";
     agentModeRef.current = true;
     setMode("all");
     setLoadingRecs(true);
@@ -895,15 +942,13 @@ export default function App() {
       const d = await res.json();
       if (d.picks?.length) {
         const enriched = enrichWithScores(d.picks);
-        agentPicksRef.current = enriched; // unfiltered — reactive effect handles filter changes
+        agentPicksRef.current = enriched;
         setRecs(applyAgentFilters(enriched));
         setPriceFilterMismatch(false);
         setVibeFilterMismatch(false);
       } else {
-        // Fallback to engine if agent finds nothing
         agentModeRef.current = false;
         agentModeCtxRef.current = null;
-        // Ref mutation won't trigger re-score effect — compute directly
         const pool = existingOverride ?? restaurants;
         if (pool.length && profile) {
           const scored = scoreRestaurants(pool, profile, { advanced, weights: customWeights });
@@ -913,7 +958,6 @@ export default function App() {
     } catch {
       agentModeRef.current = false;
       agentModeCtxRef.current = null;
-      // Same fallback for catch path
       const pool = existingOverride ?? restaurants;
       if (pool.length && profile) {
         const scored = scoreRestaurants(pool, profile, { advanced, weights: customWeights });
@@ -958,7 +1002,7 @@ export default function App() {
     setLoadingRecs(false);
   };
 
-  // ── Natural language preference → real agent ──────────────────────────────
+  // ── Natural language preference → agent ───────────────────────────────────
   const runPrefAgent = async (text, existingOverride) => {
     agentModeRef.current = true;
     setLoadingRecs(true);
@@ -968,14 +1012,10 @@ export default function App() {
       const res = await fetch("/api/agent", {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          text,
-          profile,
-          lat: userLatLng?.lat,
-          lng: userLatLng?.lng,
-          radius,
-          existingRestaurants: existingOverride ?? restaurants,
-          advanced,
-          category: placeCategory,
+          text, profile,
+          lat: userLatLng?.lat, lng: userLatLng?.lng,
+          radius, existingRestaurants: existingOverride ?? restaurants,
+          advanced, category: placeCategory,
         }),
       });
       const d = await res.json();
@@ -998,7 +1038,7 @@ export default function App() {
     setLoadingRecs(false);
   };
 
-  // ── Direct keyword search for non-food categories ────────────────────────
+  // ── Direct keyword search for non-food categories ─────────────────────────
   const runKeywordSearch = async (keyword) => {
     agentModeRef.current = true;
     setLoadingRecs(true);
@@ -1051,7 +1091,6 @@ export default function App() {
   const triggerModeAgent = async (modeKey, existingOverride) => {
     if (!userLatLng || !profile) return;
     agentModeCtxRef.current = modeKey;
-    // Lock agent mode immediately so re-score effect doesn't overwrite recs during loading
     agentModeRef.current = true;
     setLoadingRecs(true);
     setRecs([]);
@@ -1105,8 +1144,18 @@ export default function App() {
       agentPicksRef.current = [];
       prefTextRef.current = "";
       setPrefLabel(null); setCustomWeights(null);
-      triggerForYouAgent(); // re-run profile-driven agent for For You
+      triggerForYouAgent();
     }
+  };
+
+  // ── Social helper ─────────────────────────────────────────────────────────
+  const getSocialForRec = (index) => {
+    if (!userEmail) return null;
+    const social = SOCIAL_PROFILES[userEmail];
+    if (!social?.friends?.length) return null;
+    if (index === 0) return { type:"friend", ...social.friends[0] };
+    if (index === 1) return { type:"fof" };
+    return null;
   };
 
   // ── Toast ──────────────────────────────────────────────────────────────────
@@ -1117,193 +1166,137 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToastMsg(null), 2600);
   };
 
-  // ── Sheet drag ─────────────────────────────────────────────────────────────
-  const sheetY = -(snapPx(sheetSnap) - SNAP_PEEK);
-
-  const handleDragEnd = (_, info) => {
-    const velocity = info.velocity.y;
-    const offset   = info.offset.y;
-    if (velocity > 400 || offset > 100) {
-      setSheetSnap(sheetSnap === "full" ? "half" : "peek");
-    } else if (velocity < -400 || offset < -100) {
-      setSheetSnap(sheetSnap === "peek" ? "half" : "full");
-    }
-  };
-
   if (!loggedIn) return <LoginScreen onLogin={handleLogin} />;
 
   return (
-    <div style={{ minHeight:"100vh", background:"#1a1a2e", display:"flex",
-      alignItems:"center", justifyContent:"center", padding:"20px 0" }}>
-    {/* iPhone shell */}
-    <div style={{ width:393, height:Math.min(vh, 852), flexShrink:0,
-      borderRadius:50, overflow:"hidden", position:"relative",
-      background:"#e8e8e8",
-      boxShadow:"0 0 0 10px #1a1a1a, 0 0 0 12px #3a3a3a, 0 40px 80px rgba(0,0,0,0.7)",
+    <div style={{
+      display:"flex", height:"100vh", overflow:"hidden",
+      fontFamily:"'Google Sans', sans-serif", background:"#f8f9fa",
     }}>
-    {/* Notch */}
-    <div style={{ position:"absolute", top:0, left:"50%", transform:"translateX(-50%)",
-      width:120, height:34, background:"#1a1a1a", borderRadius:"0 0 20px 20px", zIndex:100 }} />
 
-      {/* ── Map background ──────────────────────────────────────────────── */}
-      {mapsLoaded ? (
-        <GoogleMap
-          mapContainerStyle={{ position:"absolute", inset:0, width:"100%", height:"100%", filter:"saturate(0.85) brightness(0.97)" }}
-          center={userLatLng || BARCELONA}
-          zoom={15}
-          onLoad={map => { mapRef.current = map; }}
-          options={{
-            disableDefaultUI: true,
-            gestureHandling: "greedy",
-            backgroundColor: "#b3cde0",
-            styles: [{ featureType:"poi", elementType:"labels", stylers:[{visibility:"off"}] }],
-          }}
-        >
-          {userLatLng && (
-            <>
-              <Marker
-                position={userLatLng}
-                icon={{
-                  path: window.google.maps.SymbolPath.CIRCLE,
-                  scale: 10,
-                  fillColor: "#4285F4",
-                  fillOpacity: 1,
-                  strokeColor: "#ffffff",
-                  strokeWeight: 3,
-                }}
-              />
-              <Circle
-                center={userLatLng}
-                radius={80}
-                options={{ fillColor:"#4285F4", fillOpacity:0.15, strokeColor:"#4285F4", strokeOpacity:0.3, strokeWeight:1 }}
-              />
-            </>
-          )}
-          {recs.map((r, i) => r.lat && r.lng && (
-            <Marker
-              key={r.place_id || r.name}
-              position={{ lat: r.lat, lng: r.lng }}
-              onClick={() => setSelectedRec(r.name)}
-              onMouseOver={() => setHoveredRec(r.name)}
-              onMouseOut={() => setHoveredRec(null)}
-              label={{ text: String(i + 1), color: "#fff", fontWeight: "bold", fontSize: "13px" }}
-              icon={{
-                path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z",
-                fillColor: selectedRec === r.name ? "#ea4335" : hoveredRec === r.name ? "#1558d6" : "#1a73e8",
-                fillOpacity: 1,
-                strokeColor: "#fff",
-                strokeWeight: 2,
-                scale: (hoveredRec === r.name || selectedRec === r.name) ? 2.5 : 2,
-                anchor: new window.google.maps.Point(12, 22),
-                labelOrigin: new window.google.maps.Point(12, 9),
-              }}
-            />
-          ))}
-        </GoogleMap>
-      ) : (
-        <div style={{ position:"absolute", inset:0, background:"#e8e8e8" }} />
-      )}
+      {/* ── LEFT PANEL ──────────────────────────────────────────────────── */}
+      <div style={{
+        width:420, flexShrink:0, height:"100vh",
+        display:"flex", flexDirection:"column",
+        background:"white",
+        boxShadow:"2px 0 16px rgba(0,0,0,0.10)",
+        zIndex:10, position:"relative",
+      }}>
 
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
-      <div style={{ position:"absolute", top:0, left:0, right:0, zIndex:40,
-        padding:"12px 12px 0",
-        background:"linear-gradient(to bottom,rgba(255,255,255,0.97) 70%,transparent)" }}>
+        {/* Sticky header */}
+        <div style={{ flexShrink:0, padding:"16px 16px 0",
+          background:"white", borderBottom:"1px solid #f1f3f4" }}>
 
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-          {/* Maps pin logo */}
-          <svg width="32" height="32" viewBox="0 0 48 48" style={{ flexShrink:0 }}>
-            <path fill="#4285F4" d="M24 4C15.163 4 8 11.163 8 20c0 12 16 28 16 28s16-16 16-28c0-8.837-7.163-16-16-16z"/>
-            <circle cx="24" cy="20" r="6.5" fill="white"/>
-          </svg>
-
-          {/* Search pill */}
-          <div style={{ flex:1, background:"white", borderRadius:24, padding:"9px 16px",
-            fontSize:14, color:"#80868b", boxShadow:"0 2px 8px rgba(0,0,0,0.12)",
-            fontFamily:"'Google Sans',sans-serif" }}>
-            Search in Maps
+          {/* Logo + user row */}
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+            <svg width="32" height="32" viewBox="0 0 48 48" style={{ flexShrink:0 }}>
+              <path fill="#4285F4" d="M24 4C15.163 4 8 11.163 8 20c0 12 16 28 16 28s16-16 16-28c0-8.837-7.163-16-16-16z"/>
+              <circle cx="24" cy="20" r="6.5" fill="white"/>
+            </svg>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:16, fontWeight:700, color:"#202124" }}>Explore Barcelona</div>
+              <div style={{ fontSize:12, color:"#5f6368", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                {user.neighborhood} · {user.tagline}
+              </div>
+            </div>
+            <motion.button whileTap={{ scale:0.92 }} onClick={handleLogout}
+              title="Click to sign out"
+              style={{ width:38, height:38, borderRadius:"50%", background:user.color,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                color:"white", fontWeight:700, fontSize:15, flexShrink:0,
+                border:"2.5px solid #f1f3f4", cursor:"pointer",
+                boxShadow:"0 2px 8px rgba(0,0,0,0.18)" }}>
+              {user.initials}
+            </motion.button>
           </div>
 
-          {/* Avatar / sign out */}
-          <motion.button whileTap={{ scale:0.92 }} onClick={handleLogout}
-            title="Tap to sign out"
-            style={{ width:38, height:38, borderRadius:"50%", background:user.color,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              color:"white", fontWeight:700, fontSize:15, flexShrink:0,
-              border:"2.5px solid white", cursor:"pointer",
-              boxShadow:"0 2px 8px rgba(0,0,0,0.18)" }}>
-            {user.initials}
-          </motion.button>
-        </div>
+          {/* Search / preference input */}
+          <div style={{ marginBottom:10 }}>
+            <div style={{ display:"flex", gap:8 }}>
+              <input value={prefInput}
+                onChange={e => setPrefInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handlePrefSubmit()}
+                placeholder={
+                  placeCategory === "fitness"   ? "e.g. yoga studio, boxing gym, crossfit…" :
+                  placeCategory === "sights"    ? "e.g. modern art, gothic history, free museum…" :
+                  placeCategory === "parks"     ? "e.g. quiet garden, dog-friendly, sea views…" :
+                  placeCategory === "shopping"  ? "e.g. vintage clothes, design market…" :
+                  placeCategory === "nightlife" ? "e.g. rooftop bar, live jazz, cocktails…" :
+                  "e.g. quiet spot for a business lunch…"
+                }
+                style={{ flex:1, border:"1.5px solid #dadce0", borderRadius:24,
+                  padding:"9px 16px", fontSize:13, outline:"none", color:"#202124",
+                  fontFamily:"'Google Sans',sans-serif", transition:"border-color 0.15s",
+                  background:"#f8f9fa" }}
+                onFocus={e => e.target.style.borderColor="#1a73e8"}
+                onBlur={e  => e.target.style.borderColor="#dadce0"}
+              />
+              <motion.button whileTap={{ scale:0.93 }} onClick={handlePrefSubmit}
+                disabled={prefLoading}
+                style={{ padding:"9px 18px", background:"#1a73e8", color:"white",
+                  border:"none", borderRadius:24, fontSize:13, fontWeight:700,
+                  cursor:"pointer", fontFamily:"'Google Sans',sans-serif",
+                  opacity: prefLoading ? 0.7 : 1, minWidth:44 }}>
+                {prefLoading ? "…" : "→"}
+              </motion.button>
+            </div>
+            {prefLabel && (
+              <motion.div initial={{ opacity:0, y:4 }} animate={{ opacity:1, y:0 }}
+                style={{ display:"inline-flex", alignItems:"center", gap:6,
+                  marginTop:8, background:"#e8f0fe", color:"#1a73e8",
+                  borderRadius:20, padding:"5px 14px", fontSize:12, fontWeight:600 }}>
+                🎯 {prefLabel}
+                <span style={{ cursor:"pointer", opacity:0.6 }}
+                  onClick={() => {
+                    agentModeCtxRef.current = null;
+                    prefTextRef.current = ""; agentPicksRef.current = [];
+                    setPrefLabel(null); setCustomWeights(null); setAdvanced({});
+                    setNoMatch(false); setNoMatchQuery(null);
+                    setPriceFilterMismatch(false); setVibeFilterMismatch(false);
+                    triggerForYouAgent();
+                  }}>✕</span>
+              </motion.div>
+            )}
+          </div>
 
-        {/* Category chips */}
-        <div style={{ display:"flex", gap:7, overflowX:"auto",
-          scrollbarWidth:"none", paddingBottom:6 }}>
-          {PLACE_CATEGORIES.map(c => (
-            <motion.button key={c.key} whileTap={{ scale:0.95 }}
-              onClick={() => handleCategoryChange(c.key)}
-              style={{ padding:"6px 14px", borderRadius:20, border:"none",
-                fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer",
-                fontFamily:"'Google Sans',sans-serif",
-                background: placeCategory===c.key ? "#202124" : "white",
-                color:      placeCategory===c.key ? "white"   : "#3c4043",
-                boxShadow:  placeCategory===c.key
-                  ? "0 2px 8px rgba(0,0,0,0.30)"
-                  : "0 1px 4px rgba(0,0,0,0.10)",
-                transition:"all 0.18s" }}>
-              {c.label}
-            </motion.button>
-          ))}
-        </div>
+          {/* Category chips */}
+          <div style={{ display:"flex", gap:7, overflowX:"auto",
+            scrollbarWidth:"none", paddingBottom:8 }}>
+            {PLACE_CATEGORIES.map(c => (
+              <motion.button key={c.key} whileTap={{ scale:0.95 }}
+                onClick={() => handleCategoryChange(c.key)}
+                style={{ padding:"6px 14px", borderRadius:20, border:"none",
+                  fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer",
+                  fontFamily:"'Google Sans',sans-serif",
+                  background: placeCategory===c.key ? "#202124" : "white",
+                  color:      placeCategory===c.key ? "white"   : "#3c4043",
+                  boxShadow:  placeCategory===c.key
+                    ? "0 2px 8px rgba(0,0,0,0.30)"
+                    : "0 1px 4px rgba(0,0,0,0.10)",
+                  transition:"all 0.18s" }}>
+                {c.label}
+              </motion.button>
+            ))}
+          </div>
 
-        {/* Mode chips */}
-        <div style={{ display:"flex", gap:7, overflowX:"auto",
-          scrollbarWidth:"none", paddingBottom:10 }}>
-          {MODES.map(m => (
-            <motion.button key={m.key} whileTap={{ scale:0.95 }}
-              onClick={() => handleModeChange(m.key)}
-              style={{ padding:"7px 15px", borderRadius:20, border:"none",
-                fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer",
-                fontFamily:"'Google Sans',sans-serif",
-                background: mode===m.key ? "#1a73e8" : "white",
-                color:      mode===m.key ? "white"   : "#3c4043",
-                boxShadow:  mode===m.key
-                  ? "0 2px 8px rgba(26,115,232,0.35)"
-                  : "0 1px 4px rgba(0,0,0,0.10)",
-                transition:"all 0.18s" }}>
-              {m.label}
-            </motion.button>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Bottom sheet ────────────────────────────────────────────────── */}
-      <motion.div
-        drag="y"
-        dragControls={dragControls}
-        dragListener={false}
-        dragConstraints={{ top: 0, bottom: 0 }}
-        dragElastic={0.06}
-        onDragEnd={handleDragEnd}
-        animate={{ y: sheetY }}
-        transition={{ type:"spring", stiffness:320, damping:32 }}
-        style={{ position:"absolute", bottom: -(vh - SNAP_PEEK),
-          left:0, right:0, height: vh,
-          background:"white", borderRadius:"22px 22px 0 0",
-          boxShadow:"0 -6px 32px rgba(0,0,0,0.13)", zIndex:30,
-          display:"flex", flexDirection:"column" }}
-      >
-        {/* Drag handle — tap to cycle snaps, drag to freeform */}
-        <div
-          onPointerDown={e => dragControls.start(e)}
-          onClick={() => {
-            if (sheetSnap === "peek") setSheetSnap("half");
-            else if (sheetSnap === "half") setSheetSnap("full");
-            else setSheetSnap("half");
-          }}
-          style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"10px 0 4px", flexShrink:0, cursor:"pointer", userSelect:"none" }}>
-          <div style={{ width:38, height:4, borderRadius:2, background:"#dadce0", marginBottom:4 }}/>
-          <div style={{ fontSize:14, color:"#bdc1c6", lineHeight:1 }}>
-            {sheetSnap === "full" ? "▾" : "▴"}
+          {/* Mode chips */}
+          <div style={{ display:"flex", gap:7, overflowX:"auto",
+            scrollbarWidth:"none", paddingBottom:12 }}>
+            {MODES.map(m => (
+              <motion.button key={m.key} whileTap={{ scale:0.95 }}
+                onClick={() => handleModeChange(m.key)}
+                style={{ padding:"7px 15px", borderRadius:20, border:"none",
+                  fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer",
+                  fontFamily:"'Google Sans',sans-serif",
+                  background: mode===m.key ? "#1a73e8" : "white",
+                  color:      mode===m.key ? "white"   : "#3c4043",
+                  boxShadow:  mode===m.key
+                    ? "0 2px 8px rgba(26,115,232,0.35)"
+                    : "0 1px 4px rgba(0,0,0,0.10)",
+                  transition:"all 0.18s" }}>
+                {m.label}
+              </motion.button>
+            ))}
           </div>
         </div>
 
@@ -1315,12 +1308,9 @@ export default function App() {
             { key:"pipeline", label:"⚙️ Pipeline"  },
           ].map(t => (
             <button key={t.key}
-              onClick={() => {
-                setActiveTab(t.key);
-                if (sheetSnap === "peek") setSheetSnap("half");
-              }}
-              style={{ flex:1, padding:"11px 0", border:"none", background:"none",
-                cursor:"pointer", fontSize:12, fontWeight:600,
+              onClick={() => setActiveTab(t.key)}
+              style={{ flex:1, padding:"12px 0", border:"none", background:"none",
+                cursor:"pointer", fontSize:13, fontWeight:600,
                 fontFamily:"'Google Sans',sans-serif",
                 color: activeTab===t.key ? "#1a73e8" : "#5f6368",
                 borderBottom: activeTab===t.key ? "2.5px solid #1a73e8" : "2.5px solid transparent",
@@ -1331,295 +1321,336 @@ export default function App() {
         </div>
 
         {/* Scrollable tab content */}
-        <div ref={sheetContentRef}
-          onPointerDown={e => e.stopPropagation()}
-          style={{ flex:1, minHeight:0, overflowY:"auto", WebkitOverflowScrolling:"touch", touchAction:"pan-y" }}>
-            {activeTab === "explore" && (
-              <motion.div key="explore"
-                initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
+        <div ref={panelContentRef}
+          style={{ flex:1, minHeight:0, overflowY:"auto", WebkitOverflowScrolling:"touch" }}>
 
-                {/* Pref input */}
-                <div style={{ padding:"14px 14px 4px" }}>
-                  <div style={{ fontSize:13, fontWeight:600, color:"#202124", marginBottom:7 }}>
-                    💬 What are you in the mood for?
-                  </div>
-                  <div style={{ display:"flex", gap:8 }}>
-                    <input value={prefInput}
-                      onChange={e => setPrefInput(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && handlePrefSubmit()}
-                      placeholder={
-                        placeCategory === "fitness"  ? "e.g. yoga studio, boxing gym, crossfit…" :
-                        placeCategory === "sights"   ? "e.g. modern art, gothic history, free museum…" :
-                        placeCategory === "parks"    ? "e.g. quiet garden, dog-friendly, sea views…" :
-                        placeCategory === "shopping" ? "e.g. vintage clothes, design market…" :
-                        placeCategory === "nightlife"? "e.g. rooftop bar, live jazz, cocktails…" :
-                        "e.g. quiet spot for a business lunch…"
-                      }
-                      style={{ flex:1, border:"1.5px solid #dadce0", borderRadius:20,
-                        padding:"9px 15px", fontSize:13, outline:"none", color:"#202124",
-                        fontFamily:"'Google Sans',sans-serif",
-                        transition:"border-color 0.15s" }}
-                      onFocus={e => e.target.style.borderColor="#1a73e8"}
-                      onBlur={e  => e.target.style.borderColor="#dadce0"}
-                    />
-                    <motion.button whileTap={{ scale:0.93 }} onClick={handlePrefSubmit}
-                      disabled={prefLoading}
-                      style={{ padding:"9px 18px", background:"#1a73e8", color:"white",
-                        border:"none", borderRadius:20, fontSize:13, fontWeight:700,
-                        cursor:"pointer", fontFamily:"'Google Sans',sans-serif",
-                        opacity: prefLoading ? 0.7 : 1, minWidth:44 }}>
-                      {prefLoading ? "…" : "→"}
-                    </motion.button>
-                  </div>
-                  {prefLabel && (
-                    <motion.div initial={{ opacity:0, y:4 }} animate={{ opacity:1, y:0 }}
-                      style={{ display:"inline-flex", alignItems:"center", gap:6,
-                        marginTop:8, background:"#e8f0fe", color:"#1a73e8",
-                        borderRadius:20, padding:"5px 14px", fontSize:12, fontWeight:600 }}>
-                      🎯 {prefLabel}
-                      <span style={{ cursor:"pointer", opacity:0.6 }}
-                        onClick={() => { agentModeCtxRef.current = null;
-                          prefTextRef.current = ""; agentPicksRef.current = [];
-                          setPrefLabel(null); setCustomWeights(null); setAdvanced({});
-                          setNoMatch(false); setNoMatchQuery(null); setPriceFilterMismatch(false); setVibeFilterMismatch(false);
-                          triggerForYouAgent(); }}>✕</span>
-                    </motion.div>
-                  )}
+          {activeTab === "explore" && (
+            <motion.div key="explore"
+              initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
+
+              {/* Radius slider */}
+              <div style={{ padding:"12px 16px 4px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between",
+                  fontSize:12, color:"#5f6368", marginBottom:4 }}>
+                  <span>Search radius</span>
+                  <span style={{ fontWeight:600, color:"#3c4043" }}>{radius}m</span>
                 </div>
+                <input type="range" min={500} max={5000} step={250} value={radius}
+                  onChange={e => setRadius(Number(e.target.value))}
+                  style={{ width:"100%", accentColor:"#1a73e8", cursor:"pointer" }}/>
+              </div>
 
-                {/* Radius slider */}
-                <div style={{ padding:"8px 14px 4px" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between",
-                    fontSize:12, color:"#5f6368", marginBottom:4 }}>
-                    <span>Search radius</span>
-                    <span style={{ fontWeight:600, color:"#3c4043" }}>{radius}m</span>
-                  </div>
-                  <input type="range" min={500} max={5000} step={250} value={radius}
-                    onChange={e => setRadius(Number(e.target.value))}
-                    onPointerDown={e => e.stopPropagation()}
-                    onTouchStart={e => e.stopPropagation()}
-                    style={{ width:"100%", accentColor:"#1a73e8", cursor:"pointer" }}/>
-                </div>
-
-                {/* Advanced toggle */}
-                <div style={{ padding:"4px 14px 8px" }}>
-                  <button onClick={() => setShowAdvanced(s=>!s)}
-                    style={{ fontSize:12, color:"#1a73e8", background:"none", border:"none",
-                      cursor:"pointer", fontFamily:"'Google Sans',sans-serif", padding:0 }}>
-                    {showAdvanced ? "▲ Hide filters" : "▼ Advanced filters"}
-                  </button>
-                  <AnimatePresence>
-                    {showAdvanced && (
-                      <motion.div initial={{ height:0, opacity:0 }}
-                        animate={{ height:"auto", opacity:1 }}
-                        exit={{ height:0, opacity:0 }} style={{ overflow:"hidden" }}>
-                        <div style={{ paddingTop:10, display:"flex", flexDirection:"column", gap:10 }}>
-                          {/* Budget filter — euro ranges mapped to price levels */}
-                          <div>
-                            <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Budget per person</div>
-                            <div style={{ display:"flex", gap:6 }}>
-                              {[["Any",null],["< €20",1],["€20–35",2],["€35–60",3]].map(([label, val]) => {
-                                const active = val === null
-                                  ? !advanced.price_max
-                                  : advanced.price_max === val;
-                                return (
-                                  <button key={label}
-                                    onPointerDown={e => e.stopPropagation()}
-                                    onClick={() => setAdvanced(a => ({ ...a, price_max: val }))}
-                                    style={{ flex:1, padding:"6px 0", border:"1.5px solid",
-                                      borderColor: active ? "#1a73e8" : "#dadce0",
-                                      borderRadius:20, background: active ? "#e8f0fe" : "white",
-                                      color: active ? "#1a73e8" : "#5f6368",
-                                      fontSize:12, fontWeight:600, cursor:"pointer",
-                                      fontFamily:"'Google Sans',sans-serif" }}>
-                                    {label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                          {/* Open Now */}
-                          <div>
-                            <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Availability</div>
-                            <div style={{ display:"flex", gap:6 }}>
-                              {[["Any",false],["Open Now",true]].map(([label, val]) => {
-                                const active = (advanced.open_now || false) === val;
-                                return (
-                                  <button key={label}
-                                    onPointerDown={e => e.stopPropagation()}
-                                    onClick={() => setAdvanced(a => ({ ...a, open_now: val }))}
-                                    style={{ flex:1, padding:"6px 0", border:"1.5px solid",
-                                      borderColor: active ? "#1a73e8" : "#dadce0",
-                                      borderRadius:20, background: active ? "#e8f0fe" : "white",
-                                      color: active ? "#1a73e8" : "#5f6368",
-                                      fontSize:12, fontWeight:600, cursor:"pointer",
-                                      fontFamily:"'Google Sans',sans-serif" }}>
-                                    {label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                          {/* Vibe selector */}
-                          <div>
-                            <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Vibe</div>
-                            <div style={{ display:"flex", gap:6 }}>
-                              {[["Quiet","quiet"],["Any",null],["Lively","lively"]].map(([label, val]) => {
-                                const active = (advanced.vibe || null) === val;
-                                return (
-                                  <button key={label}
-                                    onPointerDown={e => e.stopPropagation()}
-                                    onClick={() => setAdvanced(a => ({ ...a, vibe: val }))}
-                                    style={{ flex:1, padding:"6px 0", border:"1.5px solid",
-                                      borderColor: active ? "#1a73e8" : "#dadce0",
-                                      borderRadius:20, background: active ? "#e8f0fe" : "white",
-                                      color: active ? "#1a73e8" : "#5f6368",
-                                      fontSize:12, fontWeight:600, cursor:"pointer",
-                                      fontFamily:"'Google Sans',sans-serif" }}>
-                                    {label}
-                                  </button>
-                                );
-                              })}
-                            </div>
+              {/* Advanced toggle */}
+              <div style={{ padding:"4px 16px 8px" }}>
+                <button onClick={() => setShowAdvanced(s=>!s)}
+                  style={{ fontSize:12, color:"#1a73e8", background:"none", border:"none",
+                    cursor:"pointer", fontFamily:"'Google Sans',sans-serif", padding:0 }}>
+                  {showAdvanced ? "▲ Hide filters" : "▼ Advanced filters"}
+                </button>
+                <AnimatePresence>
+                  {showAdvanced && (
+                    <motion.div initial={{ height:0, opacity:0 }}
+                      animate={{ height:"auto", opacity:1 }}
+                      exit={{ height:0, opacity:0 }} style={{ overflow:"hidden" }}>
+                      <div style={{ paddingTop:10, display:"flex", flexDirection:"column", gap:10 }}>
+                        {/* Budget filter */}
+                        <div>
+                          <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Budget per person</div>
+                          <div style={{ display:"flex", gap:6 }}>
+                            {[["Any",null],["< €20",1],["€20–35",2],["€35–60",3]].map(([label, val]) => {
+                              const active = val === null ? !advanced.price_max : advanced.price_max === val;
+                              return (
+                                <button key={label}
+                                  onClick={() => setAdvanced(a => ({ ...a, price_max: val }))}
+                                  style={{ flex:1, padding:"6px 0", border:"1.5px solid",
+                                    borderColor: active ? "#1a73e8" : "#dadce0",
+                                    borderRadius:20, background: active ? "#e8f0fe" : "white",
+                                    color: active ? "#1a73e8" : "#5f6368",
+                                    fontSize:12, fontWeight:600, cursor:"pointer",
+                                    fontFamily:"'Google Sans',sans-serif" }}>
+                                  {label}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <div style={{ borderTop:"1px solid #f1f3f4" }}/>
-
-                {/* Cards */}
-                <div style={{ padding:"12px 14px 180px" }}>
-                  {/* Vibe filter mismatch banner */}
-                  {vibeFilterMismatch && (
-                    <motion.div initial={{ opacity:0, y:-6 }} animate={{ opacity:1, y:0 }}
-                      style={{ background:"#f3e8ff", border:"1.5px solid #a855f7",
-                        borderRadius:14, padding:"14px 16px", marginBottom:14 }}>
-                      <div style={{ fontSize:13, color:"#3c4043", marginBottom:10, lineHeight:1.5 }}>
-                        None of your current picks match a <strong>{advanced.vibe}</strong> vibe.
-                      </div>
-                      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                        <motion.button whileTap={{ scale:0.96 }}
-                          onClick={() => { setAdvanced(a => ({ ...a, vibe: null })); setVibeFilterMismatch(false); }}
-                          style={{ padding:"8px 18px", background:"#9333ea", color:"white",
-                            border:"none", borderRadius:20, fontSize:13, fontWeight:700,
-                            cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
-                          Clear vibe filter
-                        </motion.button>
-                        <motion.button whileTap={{ scale:0.96 }}
-                          onClick={() => {
-                            setVibeFilterMismatch(false);
-                            if (agentModeCtxRef.current === "trending" || agentModeCtxRef.current === "hidden")
-                              triggerModeAgent(agentModeCtxRef.current);
-                            else if (prefTextRef.current) runPrefAgent(prefTextRef.current);
-                            else triggerForYouAgent();
-                          }}
-                          style={{ padding:"8px 18px", background:"white", color:"#9333ea",
-                            border:"1.5px solid #a855f7", borderRadius:20, fontSize:13, fontWeight:600,
-                            cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
-                          Search for {advanced.vibe} places
-                        </motion.button>
+                        {/* Open Now */}
+                        <div>
+                          <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Availability</div>
+                          <div style={{ display:"flex", gap:6 }}>
+                            {[["Any",false],["Open Now",true]].map(([label, val]) => {
+                              const active = (advanced.open_now || false) === val;
+                              return (
+                                <button key={label}
+                                  onClick={() => setAdvanced(a => ({ ...a, open_now: val }))}
+                                  style={{ flex:1, padding:"6px 0", border:"1.5px solid",
+                                    borderColor: active ? "#1a73e8" : "#dadce0",
+                                    borderRadius:20, background: active ? "#e8f0fe" : "white",
+                                    color: active ? "#1a73e8" : "#5f6368",
+                                    fontSize:12, fontWeight:600, cursor:"pointer",
+                                    fontFamily:"'Google Sans',sans-serif" }}>
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        {/* Vibe */}
+                        <div>
+                          <div style={{ fontSize:12, color:"#5f6368", marginBottom:6 }}>Vibe</div>
+                          <div style={{ display:"flex", gap:6 }}>
+                            {[["Quiet","quiet"],["Any",null],["Lively","lively"]].map(([label, val]) => {
+                              const active = (advanced.vibe || null) === val;
+                              return (
+                                <button key={label}
+                                  onClick={() => setAdvanced(a => ({ ...a, vibe: val }))}
+                                  style={{ flex:1, padding:"6px 0", border:"1.5px solid",
+                                    borderColor: active ? "#1a73e8" : "#dadce0",
+                                    borderRadius:20, background: active ? "#e8f0fe" : "white",
+                                    color: active ? "#1a73e8" : "#5f6368",
+                                    fontSize:12, fontWeight:600, cursor:"pointer",
+                                    fontFamily:"'Google Sans',sans-serif" }}>
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
                     </motion.div>
                   )}
+                </AnimatePresence>
+              </div>
 
-                  {/* Price filter mismatch banner — shown above cards */}
-                  {priceFilterMismatch && (
-                    <motion.div initial={{ opacity:0, y:-6 }} animate={{ opacity:1, y:0 }}
-                      style={{ background:"#fef7e0", border:"1.5px solid #fbbc04",
-                        borderRadius:14, padding:"14px 16px", marginBottom:14 }}>
-                      <div style={{ fontSize:13, color:"#3c4043", marginBottom:10, lineHeight:1.5 }}>
-                        Current picks exceed your {advanced.price_max === 1 ? "< €20" : advanced.price_max === 2 ? "€20–35" : "€35–60"} budget. Search for new picks that fit?
-                      </div>
+              <div style={{ borderTop:"1px solid #f1f3f4" }}/>
+
+              {/* Cards */}
+              <div style={{ padding:"12px 16px 40px" }}>
+                {/* Vibe filter mismatch banner */}
+                {vibeFilterMismatch && (
+                  <motion.div initial={{ opacity:0, y:-6 }} animate={{ opacity:1, y:0 }}
+                    style={{ background:"#f3e8ff", border:"1.5px solid #a855f7",
+                      borderRadius:14, padding:"14px 16px", marginBottom:14 }}>
+                    <div style={{ fontSize:13, color:"#3c4043", marginBottom:10, lineHeight:1.5 }}>
+                      None of your current picks match a <strong>{advanced.vibe}</strong> vibe.
+                    </div>
+                    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                       <motion.button whileTap={{ scale:0.96 }}
-                        onClick={() => {
-                          setPriceFilterMismatch(false);
-                          if (agentModeCtxRef.current) triggerModeAgent(agentModeCtxRef.current);
-                          else if (prefTextRef.current) runPrefAgent(prefTextRef.current);
-                        }}
-                        style={{ padding:"8px 18px", background:"#e37400", color:"white",
+                        onClick={() => { setAdvanced(a => ({ ...a, vibe: null })); setVibeFilterMismatch(false); }}
+                        style={{ padding:"8px 18px", background:"#9333ea", color:"white",
                           border:"none", borderRadius:20, fontSize:13, fontWeight:700,
                           cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
-                        Search now →
+                        Clear vibe filter
+                      </motion.button>
+                      <motion.button whileTap={{ scale:0.96 }}
+                        onClick={() => {
+                          setVibeFilterMismatch(false);
+                          if (agentModeCtxRef.current === "trending" || agentModeCtxRef.current === "hidden")
+                            triggerModeAgent(agentModeCtxRef.current);
+                          else if (prefTextRef.current) runPrefAgent(prefTextRef.current);
+                          else triggerForYouAgent();
+                        }}
+                        style={{ padding:"8px 18px", background:"white", color:"#9333ea",
+                          border:"1.5px solid #a855f7", borderRadius:20, fontSize:13, fontWeight:600,
+                          cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
+                        Search for {advanced.vibe} places
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Price filter mismatch banner */}
+                {priceFilterMismatch && (
+                  <motion.div initial={{ opacity:0, y:-6 }} animate={{ opacity:1, y:0 }}
+                    style={{ background:"#fef7e0", border:"1.5px solid #fbbc04",
+                      borderRadius:14, padding:"14px 16px", marginBottom:14 }}>
+                    <div style={{ fontSize:13, color:"#3c4043", marginBottom:10, lineHeight:1.5 }}>
+                      Current picks exceed your {advanced.price_max === 1 ? "< €20" : advanced.price_max === 2 ? "€20–35" : "€35–60"} budget. Search for new picks that fit?
+                    </div>
+                    <motion.button whileTap={{ scale:0.96 }}
+                      onClick={() => {
+                        setPriceFilterMismatch(false);
+                        if (agentModeCtxRef.current) triggerModeAgent(agentModeCtxRef.current);
+                        else if (prefTextRef.current) runPrefAgent(prefTextRef.current);
+                      }}
+                      style={{ padding:"8px 18px", background:"#e37400", color:"white",
+                        border:"none", borderRadius:20, fontSize:13, fontWeight:700,
+                        cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
+                      Search now →
+                    </motion.button>
+                  </motion.div>
+                )}
+
+                {loadingRecs
+                  ? <div style={{ textAlign:"center", padding:48, color:"#5f6368", fontSize:13 }}>
+                      Finding your picks…
+                    </div>
+                  : noMatch
+                  ? <motion.div initial={{ opacity:0, scale:0.97 }} animate={{ opacity:1, scale:1 }}
+                      style={{ margin:"20px 0", background:"white", borderRadius:18,
+                        boxShadow:"0 2px 16px rgba(0,0,0,0.10)", padding:"22px 20px", textAlign:"center" }}>
+                      <div style={{ fontSize:28, marginBottom:10 }}>🔍</div>
+                      {noMatchQuery
+                        ? <>
+                            <div style={{ fontSize:14, fontWeight:700, color:"#202124", marginBottom:6 }}>
+                              "{noMatchQuery.length > 40 ? noMatchQuery.slice(0,40) + "…" : noMatchQuery}" not found nearby
+                            </div>
+                            <div style={{ fontSize:13, color:"#5f6368", marginBottom:16, lineHeight:1.5 }}>
+                              No results in your current {radius}m search area. Expand it to find what you're looking for.
+                            </div>
+                          </>
+                        : <div style={{ fontSize:13, color:"#5f6368", marginBottom:16, lineHeight:1.5 }}>
+                            Nothing found nearby — try expanding the search area.
+                          </div>
+                      }
+                      <motion.button whileTap={{ scale:0.96 }}
+                        onClick={() => setRadius(prev => Math.min(prev + 1500, 5000))}
+                        style={{ padding:"10px 22px", background:"#1a73e8", color:"white",
+                          border:"none", borderRadius:20, fontSize:13, fontWeight:700,
+                          cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
+                        Expand search area (+1.5 km)
                       </motion.button>
                     </motion.div>
-                  )}
-
-                  {loadingRecs
-                    ? <div style={{ textAlign:"center", padding:32, color:"#5f6368", fontSize:13 }}>
-                        Finding your picks…
+                  : recs.length === 0
+                  ? <div style={{ textAlign:"center", padding:48, color:"#5f6368", fontSize:13 }}>
+                      No {PLACE_CATEGORIES.find(c=>c.key===placeCategory)?.agentLabel || "places"} found — try increasing the radius.
+                    </div>
+                  : recs.map((r, i) => (
+                      <div key={r.name} ref={el => { cardRefs.current[r.name] = el; }}>
+                        <PlaceCard
+                          r={r}
+                          onFeedback={handleFeedback}
+                          isSelected={selectedRec === r.name}
+                          placeCategory={placeCategory}
+                          socialData={getSocialForRec(i)}
+                          onMouseEnter={() => setHoveredRec(r.name)}
+                          onMouseLeave={() => setHoveredRec(null)}
+                        />
                       </div>
-                    : noMatch
-                    ? <motion.div initial={{ opacity:0, scale:0.97 }} animate={{ opacity:1, scale:1 }}
-                        style={{ margin:"20px 0", background:"white", borderRadius:18,
-                          boxShadow:"0 2px 16px rgba(0,0,0,0.10)", padding:"22px 20px", textAlign:"center" }}>
-                        <div style={{ fontSize:28, marginBottom:10 }}>🔍</div>
-                        {noMatchQuery
-                          ? <>
-                              <div style={{ fontSize:14, fontWeight:700, color:"#202124", marginBottom:6 }}>
-                                "{noMatchQuery.length > 40 ? noMatchQuery.slice(0,40) + "…" : noMatchQuery}" not found nearby
-                              </div>
-                              <div style={{ fontSize:13, color:"#5f6368", marginBottom:16, lineHeight:1.5 }}>
-                                No results in your current {radius}m search area. Expand it to find what you're looking for.
-                              </div>
-                            </>
-                          : <div style={{ fontSize:13, color:"#5f6368", marginBottom:16, lineHeight:1.5 }}>
-                              Nothing found nearby — try expanding the search area.
-                            </div>
-                        }
-                        <motion.button whileTap={{ scale:0.96 }}
-                          onClick={() => setRadius(r => Math.min(r + 1500, 5000))}
-                          style={{ padding:"10px 22px", background:"#1a73e8", color:"white",
-                            border:"none", borderRadius:20, fontSize:13, fontWeight:700,
-                            cursor:"pointer", fontFamily:"'Google Sans',sans-serif" }}>
-                          Expand search area (+1.5 km)
-                        </motion.button>
-                      </motion.div>
-                    : recs.length === 0
-                    ? <div style={{ textAlign:"center", padding:32, color:"#5f6368", fontSize:13 }}>
-                        No {PLACE_CATEGORIES.find(c=>c.key===placeCategory)?.agentLabel || "places"} found — try increasing the radius.
-                      </div>
-                    : recs.map(r => (
-                        <div key={r.name} ref={el => { cardRefs.current[r.name] = el; }}>
-                          <RestaurantCard r={r} onFeedback={handleFeedback} isSelected={selectedRec === r.name} placeCategory={placeCategory}/>
-                        </div>
-                      ))
-                  }
+                    ))
+                }
 
-                  {recs.length > 0 && (
-                    <motion.button whileTap={{ scale:0.97 }} onClick={handleRefresh}
-                      style={{ width:"100%", padding:"12px 0", border:"1.5px solid #dadce0",
-                        borderRadius:20, background:"white", color:"#3c4043",
-                        fontSize:13, fontWeight:600, cursor:"pointer",
-                        fontFamily:"'Google Sans',sans-serif", marginBottom:24 }}>
-                      🔄 Show 3 more picks
-                    </motion.button>
-                  )}
-                </div>
-              </motion.div>
-            )}
+                {recs.length > 0 && (
+                  <motion.button whileTap={{ scale:0.97 }} onClick={handleRefresh}
+                    style={{ width:"100%", padding:"12px 0", border:"1.5px solid #dadce0",
+                      borderRadius:20, background:"white", color:"#3c4043",
+                      fontSize:13, fontWeight:600, cursor:"pointer",
+                      fontFamily:"'Google Sans',sans-serif", marginBottom:24 }}>
+                    🔄 Show 3 more picks
+                  </motion.button>
+                )}
+              </div>
+            </motion.div>
+          )}
 
-            {activeTab === "you" && (
-              <motion.div key="you"
-                initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
-                <YouTab user={user} profile={profile} history={history}/>
-              </motion.div>
-            )}
+          {activeTab === "you" && (
+            <motion.div key="you"
+              initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
+              <YouTab user={user} profile={profile} history={history}/>
+            </motion.div>
+          )}
 
-            {activeTab === "pipeline" && (
-              <motion.div key="pipeline"
-                initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
-                <PipelineTab user={user} profile={profile}
-                  weights={customWeights} prefLabel={prefLabel}/>
-              </motion.div>
-            )}
+          {activeTab === "pipeline" && (
+            <motion.div key="pipeline"
+              initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ duration:0.15 }}>
+              <PipelineTab user={user} profile={profile}
+                weights={customWeights} prefLabel={prefLabel}/>
+            </motion.div>
+          )}
         </div>
-      </motion.div>
+      </div>
+
+      {/* ── RIGHT PANEL — MAP ────────────────────────────────────────────── */}
+      <div style={{ flex:1, position:"relative", height:"100vh" }}>
+        {mapsLoaded ? (
+          <GoogleMap
+            mapContainerStyle={{ width:"100%", height:"100%", filter:"saturate(0.85) brightness(0.97)" }}
+            center={userLatLng || BARCELONA}
+            zoom={15}
+            onLoad={map => { mapRef.current = map; }}
+            options={{
+              disableDefaultUI: true,
+              gestureHandling: "greedy",
+              backgroundColor: "#b3cde0",
+              styles: [{ featureType:"poi", elementType:"labels", stylers:[{visibility:"off"}] }],
+            }}
+          >
+            {userLatLng && (
+              <>
+                <Marker
+                  position={userLatLng}
+                  icon={{
+                    path: window.google.maps.SymbolPath.CIRCLE,
+                    scale: 10,
+                    fillColor: "#4285F4",
+                    fillOpacity: 1,
+                    strokeColor: "#ffffff",
+                    strokeWeight: 3,
+                  }}
+                />
+                <Circle
+                  center={userLatLng}
+                  radius={80}
+                  options={{ fillColor:"#4285F4", fillOpacity:0.15, strokeColor:"#4285F4", strokeOpacity:0.3, strokeWeight:1 }}
+                />
+              </>
+            )}
+
+            {recs.map((r, i) => r.lat && r.lng && (
+              <Marker
+                key={r.place_id || r.name}
+                position={{ lat: r.lat, lng: r.lng }}
+                onClick={() => setSelectedRec(r.name)}
+                onMouseOver={() => setHoveredRec(r.name)}
+                onMouseOut={() => setHoveredRec(null)}
+                label={{ text: String(i + 1), color: "#fff", fontWeight: "bold", fontSize: "13px" }}
+                icon={{
+                  path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z",
+                  fillColor: selectedRec === r.name ? "#ea4335" : hoveredRec === r.name ? "#1558d6" : "#1a73e8",
+                  fillOpacity: 1,
+                  strokeColor: "#fff",
+                  strokeWeight: 2,
+                  scale: (hoveredRec === r.name || selectedRec === r.name) ? 2.5 : 2,
+                  anchor: new window.google.maps.Point(12, 22),
+                  labelOrigin: new window.google.maps.Point(12, 9),
+                }}
+              />
+            ))}
+
+            {/* Social OverlayViews above pins */}
+            {recs.map((r, i) => {
+              const social = getSocialForRec(i);
+              if (!social || !r.lat || !r.lng) return null;
+              return (
+                <OverlayView
+                  key={`social-${r.place_id || r.name}`}
+                  position={{ lat: r.lat, lng: r.lng }}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                  getPixelPositionOffset={(width, height) => ({
+                    x: -(width / 2),
+                    y: -(height + 44),
+                  })}
+                >
+                  <SocialBubble
+                    social={social}
+                    onHover={() => setHoveredSocialPin(r.name)}
+                    onLeave={() => setHoveredSocialPin(null)}
+                    isHovered={hoveredSocialPin === r.name}
+                  />
+                </OverlayView>
+              );
+            })}
+          </GoogleMap>
+        ) : (
+          <div style={{ width:"100%", height:"100%", background:"#e8eaed",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            color:"#5f6368", fontSize:14 }}>
+            Loading map…
+          </div>
+        )}
+      </div>
 
       <Toast msg={toastMsg}/>
-    </div>
     </div>
   );
 }
